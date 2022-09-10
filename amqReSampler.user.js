@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AMQ ReSampler
 // @namespace    https://github.com/TheJoseph98
-// @version      0.0.1
+// @version      0.0.2
 // @description  Listen to shorter samples without decreasing the guess time
 // @author       raynquist
 // @match        https://animemusicquiz.com/*
@@ -22,15 +22,22 @@ let loadInterval = setInterval(() => {
 }, 500);
 
 let enabled = false;
-let songStartTime = 0;
-let buzzerTime = 0;
 let listenTime = 2000;
 let initialSilenceTime = 1000;
+let songStartTime = 0;
+let buzzerTime = 0;
+let samplePlaying = false;
+let sampleQueued = false;
 
 let answerHandler;
+let sampleEnder;
 
 
 function showBuzzMessage(buzzTime) {
+    if (!enabled) {
+        return;
+    }
+
     gameChat.systemMessage(`Song ${parseInt($("#qpCurrentSongCount").text())}, buzz: ${buzzTime}`);
 }
 
@@ -62,23 +69,67 @@ function formatTime(time) {
 }
 
 function unmute() {
+    if (!enabled) {
+        return;
+    }
+
+    if (!volumeController.muted) {
+        // already unmuted
+        return;
+    }
     volumeController.muted = false;
     volumeController.adjustVolume();
 }
 
 function mute() {
+    if (!enabled) {
+        return;
+    }
+
+    if (volumeController.muted) {
+        // already muted
+        return;
+    }
     volumeController.muted = true;
     volumeController.adjustVolume();
 }
 
 function playSample() {
-    unmute();
+    if (samplePlaying) {
+        // sample is already playing, queue another sample
+        sampleQueued = true;
+        return;
+    }
+
+    // start playing music
+    samplePlaying = true;
     songStartTime = Date.now();
-    setTimeout(() => {
-         mute();
-         buzzerTime = Date.now();
-         showBuzzMessage(formatTime(buzzerTime - songStartTime));
-    }, listenTime)
+    unmute();
+
+    scheduleEndSample();
+}
+
+function scheduleEndSample() {
+    sampleEnder = setTimeout(() => {
+        if (sampleQueued) {
+            // play another sample
+            sampleQueued = false;
+            scheduleEndSample();
+            return;
+        }
+        else {
+            endSample();
+        }
+    }, listenTime);
+}
+
+function endSample() {
+    // end sample
+    samplePlaying = false;
+    sampleQueued = false;
+    mute();
+    buzzerTime = Date.now();
+    showBuzzMessage(formatTime(buzzerTime - songStartTime));
 }
 
 function displaySampleLength() {
@@ -93,9 +144,8 @@ function setup() {
     });
 
     let quizPlayNextSongListener = new Listener("play next song", data => {
-        if (!enabled) {
-            return;
-        }
+        samplePlaying = false;
+        sampleQueued = false;
 
         // initial silence
         mute();
@@ -107,19 +157,16 @@ function setup() {
     });
 
     let quizAnswerResultsListener = new Listener("answer results", result => {
-        if (!enabled) {
-            return;
+        if (samplePlaying) {
+            // end the sample now
+            clearTimeout(sampleEnder)
+            endSample();
         }
-
-        // unmute for the show answer phase
+        // unmute for the answer result phase
         unmute();
     });
 
     answerHandler = function (event) {
-        if (!enabled) {
-            return;
-        }
-
         // on enter key, listen again
         if (event.which === 13) {
             if ($(this).val() === "") {
@@ -134,9 +181,9 @@ function setup() {
     $("#qpOptionContainer > div").append($(`<div id="qpReSampleToggle" class="clickAble qpOption"><i aria-hidden="true" class="fa fa-wheelchair-alt qpMenuItem"></i></div>`)
         .click(function () {
             if (enabled) {
+                unmute();
                 enabled = false;
                 gameChat.systemMessage(`ReSampler disabled`);
-                unmute();
             }
             else {
                 enabled = true;
@@ -153,7 +200,9 @@ function setup() {
 
     $("#qpOptionContainer > div").append($(`<div id="qpReSamplerDecreaseLength" class="clickAble qpOption"><i aria-hidden="true" class="fa fa-minus qpMenuItem"></i></div>`)
         .click(function () {
-            listenTime -= 100;
+            if (listenTime >= 200) {
+                listenTime -= 100;
+            }
             displaySampleLength();
         })
         .popover({
